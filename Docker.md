@@ -50,7 +50,10 @@ other isolated to prevent access to the database server. If you have any
 child services that require access to the database, they should be attached to
 the backend network as well.
 
-You will need to download the [database schema file](https://github.com/SteamDatabase/steamdb.info/blob/master/Database.sql)
+You will need to create a valid `settings.json` file and place it alongside
+the `docker-compose.yml` file - see `settings.json.default` for a sample.
+
+You will also need to download the [database schema file](https://github.com/SteamDatabase/steamdb.info/blob/master/Database.sql)
 from the main repository and place it alongside the `docker-compose.yml` file
 to initialise the database. One thing to be aware of when first starting the
 stack is that the database will take some time to setup on first run, so you
