@@ -243,6 +243,7 @@ namespace SteamDatabaseBackend
 
             await DbConnection.ExecuteAsync("DELETE FROM `Apps` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `AppsInfo` WHERE `AppID` = @AppID", new { AppID });
+            await DbConnection.ExecuteAsync("DELETE FROM `AppsDepots` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `Store` WHERE `AppID` = @AppID", new { AppID });
         }
 
