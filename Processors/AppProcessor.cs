@@ -244,7 +244,14 @@ namespace SteamDatabaseBackend
             await DbConnection.ExecuteAsync("DELETE FROM `Apps` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `AppsInfo` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `AppsDepots` WHERE `AppID` = @AppID", new { AppID });
-            await DbConnection.ExecuteAsync("DELETE FROM `Store` WHERE `AppID` = @AppID", new { AppID });
+            try
+            {
+                await DbConnection.ExecuteAsync("DELETE FROM `Store` WHERE `AppID` = @AppID", new { AppID });
+            }
+            catch (MySql.Data.MySqlClient.MySqlException)
+            {
+                Log.WriteError("App Processor", "Couldn't delete from Store for AppID {0}", AppID);
+            }
         }
 
         private async Task<bool> ProcessKey(string keyName, string displayName, string value, KeyValue newKv = null)
