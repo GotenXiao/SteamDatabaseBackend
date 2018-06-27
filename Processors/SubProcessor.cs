@@ -166,11 +166,6 @@ namespace SteamDatabaseBackend
                             {
                                 LicenseList.OwnedApps.Add(appID, 1);
                             }
-
-                            if (Application.ImportantApps.ContainsKey(appID))
-                            {
-                                IRC.Instance.AnnounceImportantAppUpdate(appID, $"Important app {Colors.BLUE}{Steam.GetAppName(appID)}{Colors.NORMAL} was added to package -{Colors.DARKBLUE} {SteamDB.GetPackageURL(SubID, "history")}");
-                            }
                         }
                     }
                 }
@@ -323,15 +318,13 @@ namespace SteamDatabaseBackend
 
             if (!CurrentData.ContainsKey(keyName))
             {
-                var key = await GetKeyNameID(keyName);
+                var key = KeyNameCache.GetSubKeyID(keyName);
 
                 if (key == 0)
                 {
                     var type = isJSON ? 86 : 0; // 86 is a hardcoded const for the website
 
-                    await DbConnection.ExecuteAsync("INSERT INTO `KeyNamesSubs` (`Name`, `Type`, `DisplayName`) VALUES(@Name, @Type, @DisplayName)", new { Name = keyName, DisplayName = displayName, Type = type });
-
-                    key = await GetKeyNameID(keyName);
+                    key = await KeyNameCache.CreateSubKey(keyName, displayName, type);
 
                     if (key == 0)
                     {
@@ -387,11 +380,6 @@ namespace SteamDatabaseBackend
             );
         }
         
-        private Task<uint> GetKeyNameID(string keyName)
-        {
-            return DbConnection.ExecuteScalarAsync<uint>("SELECT `ID` FROM `KeyNamesSubs` WHERE `Name` = @keyName", new { keyName });
-        }
-
         public override string ToString()
         {
             return $"Package {SubID}";

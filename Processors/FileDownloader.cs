@@ -108,6 +108,11 @@ namespace SteamDatabaseBackend
                 hashes = new Dictionary<string, byte[]>();
             }
 
+            foreach (var file in hashes.Keys.Except(files.Select(x => x.FileName)))
+            {
+                Log.WriteWarn(nameof(FileDownloader), $"\"{file}\" no longer exists in manifest");
+            }
+            
             Log.WriteInfo("FileDownloader", "Will download {0} files from depot {1}", files.Count, job.DepotID);
 
             var downloadedFiles = 0;
@@ -145,6 +150,9 @@ namespace SteamDatabaseBackend
                         downloadState = fileState;
                     }
                 }).Unwrap();
+                
+                // Register error handler on inner task
+                TaskManager.RegisterErrorHandler(fileTasks[i]);
             }
 
             await Task.WhenAll(fileTasks).ConfigureAwait(false);
@@ -303,6 +311,9 @@ namespace SteamDatabaseBackend
                         ChunkDownloadingSemaphore.Release();
                     }
                 }).Unwrap();
+
+                // Register error handler on inner task
+                TaskManager.RegisterErrorHandler(chunkTasks[i]);
             }
 
             await Task.WhenAll(chunkTasks).ConfigureAwait(false);

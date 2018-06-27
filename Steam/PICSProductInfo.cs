@@ -4,6 +4,7 @@
  * found in the LICENSE file.
  */
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -62,18 +63,26 @@ namespace SteamDatabaseBackend
 
                 var workerItem = TaskManager.Run(async () =>
                 {
-                    await Semaphore.WaitAsync(TaskManager.TaskCancellationToken.Token).ConfigureAwait(false);
-
                     try
                     {
+                        await Semaphore.WaitAsync(TaskManager.TaskCancellationToken.Token).ConfigureAwait(false);
+
                         if (mostRecentItem != null && !mostRecentItem.IsCompleted)
                         {
-                            Log.WriteDebug("PICSProductInfo", "Waiting for {0} to finish processing", processor.ToString());
+                            Log.WriteDebug(processor.ToString(), $"Waiting for previous task to finish processing ({CurrentlyProcessing.Count})");
 
                             await mostRecentItem.ConfigureAwait(false);
+
+#if DEBUG
+                            Log.WriteDebug(processor.ToString(), "Previous task lock ended");
+#endif
                         }
 
                         await processor.Process().ConfigureAwait(false);
+                    }
+                    catch (Exception e)
+                    {
+                        ErrorReporter.Notify(processor.ToString(), e);
                     }
                     finally
                     {
@@ -81,6 +90,8 @@ namespace SteamDatabaseBackend
 
                         processor.Dispose();
                     }
+
+                    return processor;
                 }).Unwrap();
 
                 lock (CurrentlyProcessing)
@@ -88,16 +99,26 @@ namespace SteamDatabaseBackend
                     CurrentlyProcessing[processor.Id] = workerItem;
                 }
 
-                workerItem.ContinueWith(task =>
+                // Register error handler on inner task and the continuation
+                TaskManager.RegisterErrorHandler(workerItem);
+                TaskManager.RegisterErrorHandler(workerItem.ContinueWith(RemoveProcessorLock, TaskManager.TaskCancellationToken.Token));
+            }
+        }
+
+        private static void RemoveProcessorLock(Task<BaseProcessor> task)
+        {
+            var processor = task.Result;
+
+            lock (CurrentlyProcessing)
+            {
+                if (CurrentlyProcessing.TryGetValue(processor.Id, out var mostRecentItem) && mostRecentItem.IsCompleted)
                 {
-                    lock (CurrentlyProcessing)
-                    {
-                        if (CurrentlyProcessing.TryGetValue(processor.Id, out mostRecentItem) && mostRecentItem.IsCompleted)
-                        {
-                            CurrentlyProcessing.Remove(processor.Id);
-                        }
-                    }
-                }, TaskManager.TaskCancellationToken.Token);
+                    CurrentlyProcessing.Remove(processor.Id);
+
+#if DEBUG
+                    Log.WriteDebug(processor.ToString(), $"Removed completed lock ({CurrentlyProcessing.Count})");
+#endif
+                }
             }
         }
     }

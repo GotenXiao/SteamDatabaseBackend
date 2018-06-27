@@ -58,10 +58,10 @@ namespace SteamDatabaseBackend
 
                 JobManager.AddJob(() => RefreshSteam());
             }
-            catch (Exception e)
-            {
-                ErrorReporter.Notify(ToString(), e);
-            }
+
+#if DEBUG
+            Log.WriteDebug(ToString(), "Processed");
+#endif
         }
     }
 }
