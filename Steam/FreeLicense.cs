@@ -19,8 +19,9 @@ namespace SteamDatabaseBackend
 {
     class FreeLicense : SteamHandler
     {
+        const int REQUEST_RATE_LIMIT = 25; // Steam actually limits at 50, but we're not in a hurry
+
         private static int AppsRequestedInHour;
-        private static readonly Queue<uint> AppsToRequest = new Queue<uint>();
         private static Timer FreeLicenseTimer;
 
         private bool CurrentlyUpdatingNames;
@@ -39,6 +40,12 @@ namespace SteamDatabaseBackend
                 Interval = TimeSpan.FromMinutes(61).TotalMilliseconds
             };
             FreeLicenseTimer.Elapsed += OnTimer;
+
+            if (LocalConfig.FreeLicensesToRequest.Count > 0)
+            {
+                AppsRequestedInHour = REQUEST_RATE_LIMIT;
+                FreeLicenseTimer.Start();
+            }
         }
 
         private void OnFreeLicenseCallback(SteamApps.FreeLicenseCallback callback)
@@ -153,7 +160,14 @@ namespace SteamDatabaseBackend
 
         private static void OnTimer(object sender, ElapsedEventArgs e)
         {
-            var list = AppsToRequest.DequeueChunk(50).ToList();
+            var list = LocalConfig.FreeLicensesToRequest.Take(REQUEST_RATE_LIMIT).ToList();
+
+            foreach (var appid in list)
+            {
+                LocalConfig.FreeLicensesToRequest.Remove(appid);
+            }
+
+            LocalConfig.Save();
 
             AppsRequestedInHour = list.Count;
 
@@ -161,7 +175,7 @@ namespace SteamDatabaseBackend
 
             JobManager.AddJob(() => Steam.Instance.Apps.RequestFreeLicense(list));
 
-            if (AppsToRequest.Count > 0)
+            if (LocalConfig.FreeLicensesToRequest.Count > 0)
             {
                 FreeLicenseTimer.Start();
             }
@@ -169,9 +183,7 @@ namespace SteamDatabaseBackend
 
         public static void RequestFromPackage(uint subId, KeyValue kv)
         {
-            var billingType = (EBillingType)kv["billingtype"].AsInteger();
-
-            if (billingType != EBillingType.FreeOnDemand && billingType != EBillingType.NoCost)
+            if ((EBillingType)kv["billingtype"].AsInteger() != EBillingType.FreeOnDemand)
             {
                 return;
             }
@@ -179,6 +191,14 @@ namespace SteamDatabaseBackend
             if (kv["appids"].Children.Count == 0)
             {
                 Log.WriteDebug("Free Packages", $"Package {subId} has no apps");
+                return;
+            }
+
+            // TODO: Put LicenseList.OwnedApps.ContainsKey() in First() search
+            var appid = kv["appids"].Children.First().AsUnsignedInteger();
+
+            if (LicenseList.OwnedApps.ContainsKey(appid))
+            {
                 return;
             }
 
@@ -199,6 +219,12 @@ namespace SteamDatabaseBackend
             if (dontGrantIfAppIdOwned > 0 && LicenseList.OwnedApps.ContainsKey(dontGrantIfAppIdOwned))
             {
                 Log.WriteDebug("Free Packages", $"Package {subId} already owns app {dontGrantIfAppIdOwned}");
+                return;
+            }
+
+            if (kv["extended"]["curatorconnect"].AsInteger() == 1)
+            {
+                Log.WriteDebug("Free Packages", $"Package {subId} is a curator package");
                 return;
             }
 
@@ -228,17 +254,24 @@ namespace SteamDatabaseBackend
                 return;
             }
 
-            var appid = kv["appids"].Children.First().AsUnsignedInteger();
+            uint parentAppId;
             bool available;
 
             using (var db = Database.Get())
             {
-                available = db.ExecuteScalar<bool>("SELECT IFNULL(`Value`, \"\") != \"unavailable\" FROM `Apps` LEFT JOIN `AppsInfo` ON `Apps`.`AppID` = `AppsInfo`.`AppID` AND `Key` = (SELECT `ID` FROM `KeyNames` WHERE `Name` = \"common_releasestate\") WHERE `Apps`.`AppID` = @AppID AND `AppType` > 0", new { AppID = appid });
+                available = db.ExecuteScalar<bool>("SELECT IFNULL(`Value`, \"\") = \"released\" FROM `Apps` LEFT JOIN `AppsInfo` ON `Apps`.`AppID` = `AppsInfo`.`AppID` AND `Key` = (SELECT `ID` FROM `KeyNames` WHERE `Name` = \"common_releasestate\") WHERE `Apps`.`AppID` = @AppID", new { AppID = appid });
+                parentAppId = db.ExecuteScalar<uint>("SELECT `Value` FROM `Apps` JOIN `AppsInfo` ON `Apps`.`AppID` = `AppsInfo`.`AppID` WHERE `Key` = (SELECT `ID` FROM `KeyNames` WHERE `Name` = \"common_parent\") AND `Apps`.`AppID` = @AppID AND `AppType` != 3", new { AppID = appid });
             }
 
             if (!available)
             {
                 Log.WriteDebug("Free Packages", $"Package {subId} (app {appid}) did not pass release check");
+                return;
+            }
+
+            if (parentAppId > 0 && !LicenseList.OwnedApps.ContainsKey(parentAppId))
+            {
+                Log.WriteDebug("Free Packages", $"Parent app {parentAppId} is not owned to get {appid}");
                 return;
             }
 
@@ -249,14 +282,17 @@ namespace SteamDatabaseBackend
 
         private static void QueueRequest(uint appid)
         {
-            if (AppsRequestedInHour++ > 50)
+            if (Settings.IsFullRun || AppsRequestedInHour++ >= REQUEST_RATE_LIMIT)
             {
+                if (LocalConfig.FreeLicensesToRequest.Contains(appid))
+                {
+                    return;
+                }
+
                 Log.WriteDebug("Free Packages", $"Adding app {appid} to queue as rate limit is reached");
 
-                if (!AppsToRequest.Contains(appid))
-                {
-                    AppsToRequest.Enqueue(appid);
-                }
+                LocalConfig.FreeLicensesToRequest.Add(appid);
+                LocalConfig.Save();
 
                 return;
             }

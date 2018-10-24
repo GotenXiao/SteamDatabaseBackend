@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
 
@@ -18,9 +19,6 @@ namespace SteamDatabaseBackend
         [JsonObject(MemberSerialization.OptIn)]
         public class CDNAuthToken
         {
-            [JsonProperty]
-            public string Server { get; set; }
-
             [JsonProperty]
             public string Token { get; set; }
 
@@ -44,11 +42,15 @@ namespace SteamDatabaseBackend
             public byte[] Sentry { get; set; } 
 
             [JsonProperty]
-            public ConcurrentDictionary<uint, CDNAuthToken> CDNAuthTokens { get; set; } 
+            public ConcurrentDictionary<uint, CDNAuthToken> CDNAuthTokens { get; set; }
+            
+            [JsonProperty]
+            public HashSet<uint> FreeLicensesToRequest { get; set; }
 
             public LocalConfigJson()
             {
                 CDNAuthTokens = new ConcurrentDictionary<uint, CDNAuthToken>();
+                FreeLicensesToRequest = new HashSet<uint>();
             }
         }
 
@@ -58,24 +60,42 @@ namespace SteamDatabaseBackend
         public static uint CellID => Current.CellID;
         public static byte[] Sentry => Current.Sentry;
         public static ConcurrentDictionary<uint, CDNAuthToken> CDNAuthTokens => Current.CDNAuthTokens;
+        public static HashSet<uint> FreeLicensesToRequest => Current.FreeLicensesToRequest;
 
         public static void Load()
         {
             if (File.Exists(ConfigPath))
             {
                 Current = JsonConvert.DeserializeObject<LocalConfigJson>(File.ReadAllText(ConfigPath));
+
+                var time = DateTime.Now;
+
+                foreach (var token in Current.CDNAuthTokens)
+                {
+                    if (time > token.Value.Expiration)
+                    {
+                        Current.CDNAuthTokens.TryRemove(token.Key, out _);
+
+                        Log.WriteInfo("Local Config", $"Removing expired token for depot {token.Key}");
+                    }
+                }
             }
-            else
-            {
-                Save();
-            }
+
+            Log.WriteInfo("Local Config", $"There are {Current.FreeLicensesToRequest.Count} free licenses to request");
+
+            Save();
         }
 
         public static void Save()
         {
             Log.WriteDebug("Local Config", "Saving...");
-            
-            File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(Current, JsonFormatted));
+
+            var data = JsonConvert.SerializeObject(Current, JsonFormatted);
+
+            lock (ConfigPath)
+            {
+                File.WriteAllText(ConfigPath, data);
+            }
         }
     }
 }

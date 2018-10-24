@@ -244,13 +244,10 @@ namespace SteamDatabaseBackend
             await DbConnection.ExecuteAsync("DELETE FROM `Apps` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `AppsInfo` WHERE `AppID` = @AppID", new { AppID });
             await DbConnection.ExecuteAsync("DELETE FROM `AppsDepots` WHERE `AppID` = @AppID", new { AppID });
-            try
+
+            if (Settings.Current.CanQueryStore)
             {
                 await DbConnection.ExecuteAsync("DELETE FROM `Store` WHERE `AppID` = @AppID", new { AppID });
-            }
-            catch (MySql.Data.MySqlClient.MySqlException)
-            {
-                Log.WriteError("App Processor", "Couldn't delete from Store for AppID {0}", AppID);
             }
         }
 
@@ -383,10 +380,12 @@ namespace SteamDatabaseBackend
                 return;
             }
 
-            IRC.Instance.SendSteamLUG(string.Format(
-                "[oslist][{0}] {1} now lists Linux{2} - {3} - https://store.steampowered.com/app/{4}/",
-                appType, name, LinkExpander.GetFormattedPrices(AppID), SteamDB.GetAppURL(AppID, "history"), AppID
-            ));
+            if (!Settings.Current.CanQueryStore)
+            {
+                return;
+            }
+
+            IRC.Instance.SendLinuxAnnouncement($"\U0001F427 {name} now lists Linux{LinkExpander.GetFormattedPrices(AppID)} - {SteamDB.GetAppURL(AppID, "history")} - https://store.steampowered.com/app/{AppID}/");
         }
 
         public override string ToString()

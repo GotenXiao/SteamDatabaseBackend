@@ -45,6 +45,27 @@ namespace SteamDatabaseBackend
                 select resultSelector(leftValue, rightValue, key);
         }
 
+        // https://codereview.stackexchange.com/a/90531/151882
+        public static IEnumerable<IEnumerable<T>> Split<T>(this IEnumerable<T> fullBatch, int chunkSize)
+        {
+            var cellCounter = 0;
+            var chunk = new List<T>(chunkSize);
+
+            foreach (var element in fullBatch)
+            {
+                if (cellCounter++ == chunkSize)
+                {
+                    yield return chunk;
+                    chunk = new List<T>(chunkSize);
+                    cellCounter = 1;
+                }
+
+                chunk.Add(element);
+            }
+
+            yield return chunk;
+        }
+
         // https://stackoverflow.com/a/33551927/2200891
         public static IEnumerable<T> DequeueChunk<T>(this Queue<T> queue, int chunkSize)
         {
@@ -109,6 +130,29 @@ namespace SteamDatabaseBackend
         public static string ByteArrayToString(byte[] ba)
         {
             return BitConverter.ToString(ba).Replace("-", "");
+        }
+
+        public static bool IsEqualSHA1(byte[] a, byte[] b)
+        {
+            const int SHA1_LENGTH = 20;
+
+            var aEmpty = a == null || a.Length < SHA1_LENGTH;
+            var bEmpty = b == null || b.Length < SHA1_LENGTH;
+
+            if (aEmpty || bEmpty)
+            {
+                return aEmpty == bEmpty;
+            }
+
+            for (int i = 0; i < SHA1_LENGTH; ++i)
+            {
+                if (a[i] != b[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         public static bool ConvertUserInputToSQLSearch(ref string output)

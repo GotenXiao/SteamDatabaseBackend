@@ -92,26 +92,29 @@ namespace SteamDatabaseBackend
             {
                 if (Settings.Current.FullRun == FullRunState.Enumerate)
                 {
-                    var lastAppID = 50000 + db.ExecuteScalar<int>("SELECT `AppID` FROM `Apps` ORDER BY `AppID` DESC LIMIT 1");
+                    // TODO: Remove WHERE when normal appids approach 2mil
+                    var lastAppID = 50000 + db.ExecuteScalar<int>("SELECT `AppID` FROM `Apps` WHERE `AppID` != 2032727 ORDER BY `AppID` DESC LIMIT 1");
                     var lastSubID = 10000 + db.ExecuteScalar<int>("SELECT `SubID` FROM `Subs` ORDER BY `SubID` DESC LIMIT 1");
-
-                    // TODO: Tempo hack due to appid 2032727
-                    if (lastAppID > 1000000)
-                    {
-                        lastAppID = 1000000;
-                    }
 
                     Log.WriteInfo("Full Run", "Will enumerate {0} apps and {1} packages", lastAppID, lastSubID);
 
                     // greatest code you've ever seen
-                    apps = Enumerable.Range(0, lastAppID).Select(i => (uint)i).ToList();
-                    packages = Enumerable.Range(0, lastSubID).Select(i => (uint)i).ToList();
+                    apps = Enumerable.Range(0, lastAppID).Reverse().Select(i => (uint)i).ToList();
+                    packages = Enumerable.Range(0, lastSubID).Reverse().Select(i => (uint)i).ToList();
                 }
                 else
                 {
                     Log.WriteInfo("Full Run", "Doing a full run on all apps and packages in the database.");
 
-                    apps = db.Query<uint>("SELECT `AppID` FROM `Apps` ORDER BY `AppID` DESC").ToList();
+                    if (Settings.Current.FullRun == FullRunState.PackagesNormal)
+                    {
+                        apps = new List<uint>();
+                    }
+                    else
+                    {
+                        apps = db.Query<uint>("(SELECT `AppID` FROM `Apps` ORDER BY `AppID` DESC) UNION DISTINCT (SELECT `AppID` FROM `SubsApps` WHERE `Type` = 'app') ORDER BY `AppID` DESC").ToList();
+                    }
+
                     packages = db.Query<uint>("SELECT `SubID` FROM `Subs` ORDER BY `SubID` DESC").ToList();
                 }
             }
@@ -139,10 +142,8 @@ namespace SteamDatabaseBackend
 
             const int size = 100;
 
-            for (var i = 0; i < appIDs.Count; i += size)
+            foreach(var list in appIDs.Split(size))
             {
-                var list = appIDs.GetRange(i, Math.Min(size, appIDs.Count - i));
-
                 JobManager.AddJob(() => Steam.Instance.Apps.PICSGetAccessTokens(list, Enumerable.Empty<uint>()));
 
                 do
@@ -159,10 +160,8 @@ namespace SteamDatabaseBackend
 
             var packages = packageIDs.Select(Utils.NewPICSRequest).ToList();
 
-            for (var i = 0; i < packages.Count; i += size)
+            foreach (var list in packages.Split(size))
             {
-                var list = packages.GetRange(i, Math.Min(size, packages.Count - i));
-
                 JobManager.AddJob(() => Steam.Instance.Apps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), list));
 
                 do
@@ -179,36 +178,55 @@ namespace SteamDatabaseBackend
             {
                 return;
             }
-
-            var packageChangesCount = callback.PackageChanges.Count;
-            var appChangesCount = callback.AppChanges.Count;
-
-            Log.WriteInfo("PICSChanges", "Changelist {0} -> {1} ({2} apps, {3} packages)", PreviousChangeNumber, callback.CurrentChangeNumber, appChangesCount, packageChangesCount);
+            
+            Log.WriteInfo("PICSChanges", $"Changelist {PreviousChangeNumber} -> {callback.CurrentChangeNumber} ({callback.AppChanges.Count} apps, {callback.PackageChanges.Count} packages)");
 
             LocalConfig.Current.ChangeNumber = PreviousChangeNumber = callback.CurrentChangeNumber;
 
             await HandleChangeNumbers(callback);
 
-            if (appChangesCount == 0 && packageChangesCount == 0)
+            if (callback.AppChanges.Count == 0 && callback.PackageChanges.Count == 0)
             {
                 IRC.Instance.SendAnnounce("{0}»{1} Changelist {2}{3}{4} (empty)", Colors.RED, Colors.NORMAL, Colors.BLUE, PreviousChangeNumber, Colors.DARKGRAY);
 
                 return;
             }
 
-// We don't care about waiting for separate database queries to finish, so don't await them
-#pragma warning disable 4014
-            if (appChangesCount > 0)
+            const int appsPerJob = 50;
+
+            if (callback.AppChanges.Count > appsPerJob)
+            {
+                foreach (var list in callback.AppChanges.Keys.Split(appsPerJob))
+                {
+                    JobManager.AddJob(() => Steam.Instance.Apps.PICSGetAccessTokens(list, Enumerable.Empty<uint>()));
+                }
+            }
+            else if (callback.AppChanges.Count > 0)
             {
                 JobManager.AddJob(() => Steam.Instance.Apps.PICSGetAccessTokens(callback.AppChanges.Keys, Enumerable.Empty<uint>()));
+            }
 
+            if (callback.PackageChanges.Count > appsPerJob)
+            {
+                foreach (var list in callback.PackageChanges.Keys.Select(Utils.NewPICSRequest).Split(appsPerJob))
+                {
+                    JobManager.AddJob(() => Steam.Instance.Apps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), list));
+                }
+            }
+            else if (callback.PackageChanges.Count > 0)
+            {
+                JobManager.AddJob(() => Steam.Instance.Apps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), callback.PackageChanges.Keys.Select(Utils.NewPICSRequest)));
+            }
+
+// We don't care about waiting for separate database queries to finish, so don't await them
+#pragma warning disable 4014
+            if (callback.AppChanges.Count > 0)
+            {
                 TaskManager.RunAsync(async () => await HandleApps(callback));
             }
 
-            if (packageChangesCount > 0)
+            if (callback.PackageChanges.Count > 0)
             {
-                JobManager.AddJob(() => Steam.Instance.Apps.PICSGetProductInfo(Enumerable.Empty<SteamApps.PICSRequest>(), callback.PackageChanges.Keys.Select(Utils.NewPICSRequest)));
-
                 TaskManager.RunAsync(async () => await HandlePackages(callback));
                 TaskManager.RunAsync(async () => await HandlePackagesChangelists(callback));
             }

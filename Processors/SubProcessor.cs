@@ -292,13 +292,10 @@ namespace SteamDatabaseBackend
             await DbConnection.ExecuteAsync("DELETE FROM `Subs` WHERE `SubID` = @SubID", new { SubID });
             await DbConnection.ExecuteAsync("DELETE FROM `SubsInfo` WHERE `SubID` = @SubID", new { SubID });
             await DbConnection.ExecuteAsync("DELETE FROM `SubsApps` WHERE `SubID` = @SubID", new { SubID });
-            try
+
+            if (Settings.Current.CanQueryStore)
             {
                 await DbConnection.ExecuteAsync("DELETE FROM `StoreSubs` WHERE `SubID` = @SubID", new { SubID });
-            }
-            catch (MySql.Data.MySqlClient.MySqlException)
-            {
-                Log.WriteError("Sub Processor", "Couldn't delete from StoreSubs for SubID {0}", SubID);
             }
         }
 

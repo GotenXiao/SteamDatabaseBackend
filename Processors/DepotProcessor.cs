@@ -62,7 +62,7 @@ namespace SteamDatabaseBackend
 
             try
             {
-                serverList = await CDNClient.FetchServerListAsync(maxServers: 30);
+                serverList = await CDNClient.FetchServerListAsync(maxServers: 60);
             }
             catch (Exception e)
             {
@@ -78,8 +78,7 @@ namespace SteamDatabaseBackend
 
             foreach (var server in serverList)
             {
-                // akamai.cdn.steampipe.steamcontent.com returns 404 Not Found unnecessarily
-                if (server.Type == "CDN" && !server.Host.Contains("cdn."))
+                if (server.Type == "CDN" && server.Host.StartsWith("valve"))
                 {
                     CDNServers.Add(server.Host);
                 }
@@ -356,12 +355,7 @@ namespace SteamDatabaseBackend
 #endif
             }
 
-            var newToken = new LocalConfig.CDNAuthToken
-            {
-                Server = GetContentServer()
-            };
-
-            var task = instance.GetCDNAuthToken(appID, depotID, newToken.Server);
+            var task = instance.GetCDNAuthToken(appID, depotID, "steampipe.steamcontent.com");
             task.Timeout = TimeSpan.FromMinutes(15);
 
             SteamApps.CDNAuthTokenCallback tokenCallback;
@@ -385,9 +379,12 @@ namespace SteamDatabaseBackend
             {
                 return null;
             }
-
-            newToken.Token = tokenCallback.Token;
-            newToken.Expiration = tokenCallback.Expiration.Subtract(TimeSpan.FromMinutes(1));
+            
+            var newToken = new LocalConfig.CDNAuthToken
+            {
+                Token = tokenCallback.Token,
+                Expiration = tokenCallback.Expiration.Subtract(TimeSpan.FromMinutes(1))
+            };
 
             LocalConfig.CDNAuthTokens[depotID] = newToken;
 
@@ -428,7 +425,7 @@ namespace SteamDatabaseBackend
                 }
 
                 depot.CDNToken = cdnToken.Token;
-                depot.Server = cdnToken.Server;
+                depot.Server = GetContentServer();
 
                 DepotManifest depotManifest = null;
                 string lastError = string.Empty;
@@ -444,9 +441,12 @@ namespace SteamDatabaseBackend
                     catch (Exception e)
                     {
                         lastError = e.Message;
+
+                        Log.WriteError("Depot Processor", "Failed to download depot manifest for app {0} depot {1} ({2}: {3}) (#{4})", appID, depot.DepotID, depot.Server, lastError, i);
                     }
 
                     // TODO: get new auth key if auth fails
+                    depot.Server = GetContentServer();
 
                     if (depotManifest == null)
                     {
@@ -460,12 +460,10 @@ namespace SteamDatabaseBackend
 
                     RemoveLock(depot.DepotID);
 
-                    Log.WriteError("Depot Processor", "Failed to download depot manifest for app {0} depot {1} ({2}: {3})", appID, depot.DepotID, depot.Server, lastError);
-
                     if (FileDownloader.IsImportantDepot(depot.DepotID))
                     {
-                        IRC.Instance.SendOps("{0}[{1}]{2} Failed to download manifest ({3}: {4})",
-                            Colors.OLIVE, depot.DepotName, Colors.NORMAL, depot.Server, lastError);
+                        IRC.Instance.SendOps("{0}[{1}]{2} Failed to download manifest ({3})",
+                            Colors.OLIVE, depot.DepotName, Colors.NORMAL, lastError);
                     }
 
                     if (!Settings.IsFullRun)
@@ -639,13 +637,26 @@ namespace SteamDatabaseBackend
         private async Task<EResult> ProcessDepotAfterDownload(IDbConnection db, IDbTransaction transaction, ManifestJob request, DepotManifest depotManifest)
         {
             var filesOld = (await db.QueryAsync<DepotFile>("SELECT `ID`, `File`, `Hash`, `Size`, `Flags` FROM `DepotsFiles` WHERE `DepotID` = @DepotID", new { request.DepotID }, transaction: transaction)).ToDictionary(x => x.File, x => x);
-            var filesNew = new List<DepotFile>();
             var filesAdded = new List<DepotFile>();
             var shouldHistorize = filesOld.Any(); // Don't historize file additions if we didn't have any data before
 
             foreach (var file in depotManifest.Files)
             {
                 var name = file.FileName.Replace('\\', '/');
+                byte[] hash = null;
+
+                // Store empty hashes as NULL (e.g. an empty file)
+                if (file.FileHash.Length > 0 && !file.Flags.HasFlag(EDepotFileFlag.Directory))
+                {
+                    for (int i = 0; i < file.FileHash.Length; ++i)
+                    {
+                        if (file.FileHash[i] != 0)
+                        {
+                            hash = file.FileHash;
+                            break;
+                        }
+                    }
+                }
 
                 // safe guard
                 if (name.Length > 255)
@@ -655,60 +666,50 @@ namespace SteamDatabaseBackend
                     continue;
                 }
 
-                var depotFile = new DepotFile
+                if (filesOld.ContainsKey(name))
                 {
-                    DepotID = request.DepotID,
-                    File    = name,
-                    Size    = file.TotalSize,
-                    Flags   = file.Flags
-                };
-
-                if (file.FileHash.Length > 0 && !file.Flags.HasFlag(EDepotFileFlag.Directory))
-                {
-                    depotFile.Hash = Utils.ByteArrayToString(file.FileHash);
-                }
-                else
-                {
-                    depotFile.Hash = "0000000000000000000000000000000000000000";
-                }
-
-                filesNew.Add(depotFile);
-            }
-
-            foreach (var file in filesNew)
-            {
-                if (filesOld.ContainsKey(file.File))
-                {
-                    var oldFile = filesOld[file.File];
+                    var oldFile = filesOld[name];
                     var updateFile = false;
 
-                    if (oldFile.Size != file.Size || !file.Hash.Equals(oldFile.Hash))
+                    if (oldFile.Size != file.TotalSize || !Utils.IsEqualSHA1(hash, oldFile.Hash))
                     {
-                        await MakeHistory(db, transaction, request, file.File, "modified", oldFile.Size, file.Size);
+                        await MakeHistory(db, transaction, request, name, "modified", oldFile.Size, file.TotalSize);
 
                         updateFile = true;
                     }
 
                     if (oldFile.Flags != file.Flags)
                     {
-                        await MakeHistory(db, transaction, request, file.File, "modified_flags", (ulong)oldFile.Flags, (ulong)file.Flags);
+                        await MakeHistory(db, transaction, request, name, "modified_flags", (ulong)oldFile.Flags, (ulong)file.Flags);
 
                         updateFile = true;
                     }
 
                     if (updateFile)
                     {
-                        file.ID = oldFile.ID;
-
-                        await db.ExecuteAsync("UPDATE `DepotsFiles` SET `Hash` = @Hash, `Size` = @Size, `Flags` = @Flags WHERE `DepotID` = @DepotID AND `ID` = @ID", file, transaction: transaction);
+                        await db.ExecuteAsync("UPDATE `DepotsFiles` SET `Hash` = @Hash, `Size` = @Size, `Flags` = @Flags WHERE `DepotID` = @DepotID AND `ID` = @ID", new DepotFile
+                        {
+                            ID = oldFile.ID,
+                            DepotID = request.DepotID,
+                            Hash = hash,
+                            Size = file.TotalSize,
+                            Flags = file.Flags
+                        }, transaction: transaction);
                     }
 
-                    filesOld.Remove(file.File);
+                    filesOld.Remove(name);
                 }
                 else
                 {
                     // We want to historize modifications first, and only then deletions and additions
-                    filesAdded.Add(file);
+                    filesAdded.Add(new DepotFile
+                    {
+                        DepotID = request.DepotID,
+                        Hash = hash,
+                        File = name,
+                        Size = file.TotalSize,
+                        Flags = file.Flags
+                    });
                 }
             }
 

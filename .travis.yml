@@ -1,9 +1,6 @@
-sudo: required
-dist: trusty
-
 language: csharp
 mono: none
-dotnet: 2.0.0
+dotnet: 2.1
 
 solution: SteamDatabaseBackend.sln
 
@@ -12,7 +9,8 @@ install:
   - dotnet restore
 
 script:
-  - dotnet build
+  - dotnet build -c Debug
+  - dotnet build -c Release
 
 notifications:
   email: false

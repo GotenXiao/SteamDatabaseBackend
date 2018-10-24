@@ -11,9 +11,11 @@ namespace SteamDatabaseBackend
 {
     class Watchdog
     {
+        private readonly Timer Timer;
+
         public Watchdog()
         {
-            new Timer(OnTimer, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(20));
+            Timer = new Timer(OnTimer, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(20));
         }
 
         private void OnTimer(object state)
@@ -28,6 +30,15 @@ namespace SteamDatabaseBackend
             if (Steam.Instance.Client.IsConnected && Application.ChangelistTimer.Enabled)
             {
                 AccountInfo.Sync();
+
+                if (WebAuth.IsAuthorized)
+                {
+                    TaskManager.RunAsync(async () => await AccountInfo.RefreshAppsToIdle());
+                }
+                else
+                {
+                    WebAuth.AuthenticateUser();
+                }
             }
             else if (DateTime.Now.Subtract(Connection.LastSuccessfulLogin).TotalMinutes >= 5.0)
             {
